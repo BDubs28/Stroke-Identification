@@ -3,7 +3,13 @@ export async function extractStrokeSegments(canvas, batchSize = 30) {
     const { width, height } = canvas;
     const imageData = ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
-  
+
+    
+    // Draw the original image onto the canvas to extract pixel data
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, width, height);
+ 
     const getPixelIndex = (x, y) => y * width + x;
     const isWhite = (x, y) => {
       const i = (y * width + x) * 4;
@@ -84,7 +90,7 @@ export async function extractStrokeSegments(canvas, batchSize = 30) {
     const drawEdges = () => {
       for (let i = 0; i < batchSize && edgeIndex < drawOrder.length; i++, edgeIndex++) {
         const [x, y] = drawOrder[edgeIndex];
-        ctx.fillStyle = "#ff0000"; // red
+        ctx.fillStyle = "#000000"; // red
         ctx.fillRect(x, y, 1, 1);
       }
       if (edgeIndex < drawOrder.length) {
@@ -145,7 +151,7 @@ export async function extractStrokeSegments(canvas, batchSize = 30) {
       const group = fillerGroups[fillGroupIndex];
       for (let i = 0; i < batchSize && fillPixelIndex < group.length; i++, fillPixelIndex++) {
         const [x, y] = group[fillPixelIndex];
-        ctx.fillStyle = "#99ccff"; // light blue
+        ctx.fillStyle = "#000000"; // light blue
         ctx.fillRect(x, y, 1, 1);
       }
       if (fillPixelIndex >= group.length) {
