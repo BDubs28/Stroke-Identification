@@ -18,7 +18,7 @@ export async function extractStrokeSegments(canvas) {
       );
     };
   
-    // Step 1: Precompute edge pixels
+    // Precompute edge pixels
     const edgeMap = new Uint8Array(width * height);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -30,9 +30,7 @@ export async function extractStrokeSegments(canvas) {
             const nx = x + dx;
             const ny = y + dy;
             if (
-              nx < 0 || ny < 0 ||
-              nx >= width || ny >= height ||
-              !isBlack(nx, ny)
+              nx < 0 || ny < 0 || nx >= width || ny >= height || !isBlack(nx, ny)
             ) {
               isEdge = true;
             }
@@ -45,27 +43,23 @@ export async function extractStrokeSegments(canvas) {
       }
     }
   
-    // Step 2: Use edgeMap instead of recalculating
-    const isEdgePixel = (x, y) => {
-      return edgeMap[getPixelIndex(x, y)] === 1;
-    };
+    const isEdgePixel = (x, y) => edgeMap[getPixelIndex(x, y)] === 1;
   
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   
-    const drawDebugPoint = (x, y, color) => {
+    const drawDebugPoint = (x, y, color, size = 1) => {
       ctx.fillStyle = color;
-      ctx.fillRect(x, y, 1, 1);
+      ctx.fillRect(x, y, size, size);
     };
   
     const animateDebugAngle = async (p1, p2, p3, angle, isSharp) => {
       drawDebugPoint(p1[0], p1[1], "#ff0000");
       drawDebugPoint(p2[0], p2[1], "#ffff00");
       drawDebugPoint(p3[0], p3[1], "#00aaff");
-  
       if (isSharp) {
-        drawDebugPoint(p2[0], p2[1], "#ff00ff");
+        drawDebugPoint(p2[0], p2[1], "#ff00ff", 2);
         console.log(`🟪 Sharp angle at (${p2[0]}, ${p2[1]}): ${angle.toFixed(1)}°`);
-        // await sleep(10);
+        // await sleep(300);
       } else {
         // await sleep(10);
       }
@@ -75,11 +69,10 @@ export async function extractStrokeSegments(canvas) {
       const a = [p2[0] - p1[0], p2[1] - p1[1]];
       const b = [p3[0] - p2[0], p3[1] - p2[1]];
       const dot = a[0] * b[0] + a[1] * b[1];
-      const magA = Math.hypot(a[0], a[1]);
-      const magB = Math.hypot(b[0], b[1]);
+      const magA = Math.hypot(...a);
+      const magB = Math.hypot(...b);
       const cosTheta = dot / (magA * magB);
-      const angle = Math.acos(Math.min(Math.max(cosTheta, -1), 1)) * (180 / Math.PI);
-      return angle;
+      return Math.acos(Math.min(Math.max(cosTheta, -1), 1)) * (180 / Math.PI);
     };
   
     const floodFill = async (x, y) => {
@@ -97,11 +90,10 @@ export async function extractStrokeSegments(canvas) {
   
         for (let dx = -1; dx <= 1; dx++) {
           for (let dy = -1; dy <= 1; dy++) {
-            const nx = cx + dx;
-            const ny = cy + dy;
+            const nx = cx + dx, ny = cy + dy;
             if (
-              nx >= 0 && nx < width &&
-              ny >= 0 && ny < height &&
+              nx >= 0 && ny >= 0 &&
+              nx < width && ny < height &&
               !visited[getPixelIndex(nx, ny)] &&
               isEdgePixel(nx, ny)
             ) {
@@ -111,97 +103,105 @@ export async function extractStrokeSegments(canvas) {
         }
       }
   
-      // Sliding window: angle check with p1=i, p2=i+7, p3=i+14
+      const strokeSegments = [];
+      const sharpPoints = [];
+  
       for (let i = 0; i < path.length - 14; i++) {
         const p1 = path[i];
         const p2 = path[i + 7];
         const p3 = path[i + 14];
         const angle = getAngle(p1, p2, p3);
-  
         const isSharp = !isNaN(angle) && angle > 40;
-        if (isSharp) debugPoints.push({ point: p2, index: i });
-  
         await animateDebugAngle(p1, p2, p3, angle, isSharp);
+        if (isSharp) {
+          sharpPoints.push({ point: p2, index: i + 7 });
+        }
       }
+  
+      if (sharpPoints.length === 0) return [];
+  
+      const strokes = [];
+      let lastIndex = 0;
+  
+      for (const sharp of sharpPoints) {
+        const segment = path.slice(lastIndex, sharp.index + 1);
+        if (segment.length >= 2) {
+          strokes.push(segment);
+        }
+        lastIndex = sharp.index + 1;
+      }
+  
+      if (lastIndex < path.length - 1) {
+        strokes.push(path.slice(lastIndex));
+      }
+  
+      return strokes;
     };
   
-    // Step 3: Scan the image and process edge pixels
+    const allStrokes = [];
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         if (!visited[getPixelIndex(x, y)] && isEdgePixel(x, y)) {
-          await floodFill(x, y);
+          const segments = await floodFill(x, y);
+          if (segments) allStrokes.push(...segments);
         }
       }
     }
   
-    console.log("🟣 Found", debugPoints.length, "sharp angle debug points.");
+    console.log("🧠 Segmented strokes:", allStrokes.length);
   
-    // Step 4: Deduplicate sharp angles by their index, not physical space
-    const deduplicateByProximity = (points, window = 10) => {
-      const clusters = [];
-      let currentCluster = [];
+    const brushRadius = 5;
+    const colored = new Set();
+    const strokeGroups = [];
   
-      for (let i = 0; i < points.length; i++) {
-        const cur = points[i];
-        if (
-          currentCluster.length === 0 ||
-          cur.index - currentCluster[currentCluster.length - 1].index <= window
-        ) {
-          currentCluster.push(cur);
-        } else {
-          clusters.push(currentCluster);
-          currentCluster = [cur];
-        }
-      }
-  
-      if (currentCluster.length > 0) {
-        clusters.push(currentCluster);
-      }
-  
-      return clusters.map((cluster) => {
-        const avgX = Math.round(
-          cluster.reduce((sum, p) => sum + p.point[0], 0) / cluster.length
-        );
-        const avgY = Math.round(
-          cluster.reduce((sum, p) => sum + p.point[1], 0) / cluster.length
-        );
-        return [avgX, avgY];
-      });
-    };
-  
-    const deduped = deduplicateByProximity(debugPoints);
-    console.log("🟢 Deduplicated sharp angles:", deduped.length);
-  
-    const isSurroundedByWhite = (x, y, radius = 3, threshold = 0.6) => {
-        let whiteCount = 0;
-        let total = 0;
-      
-        for (let dx = -radius; dx <= radius; dx++) {
-          for (let dy = -radius; dy <= radius; dy++) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-            total++;
-            const i = (ny * width + nx) * 4;
-            const isWhite = data[i] > 200 && data[i + 1] > 200 && data[i + 2] > 200;
-            if (isWhite) whiteCount++;
+    const strokeCovered = (brushPath, target) => {
+      let hit = 0;
+      const hitSet = new Set(target.map(([x, y]) => `${x},${y}`));
+      for (const [bx, by] of brushPath) {
+        for (let dx = -brushRadius; dx <= brushRadius; dx++) {
+          for (let dy = -brushRadius; dy <= brushRadius; dy++) {
+            const k = `${bx + dx},${by + dy}`;
+            if (hitSet.has(k)) {
+              hit++;
+              break;
+            }
           }
         }
-      
-        return whiteCount / total > threshold;
-      };
-      
-      const filtered = deduped.filter(([x, y]) => !isSurroundedByWhite(x, y));
-      
-      console.log("🧠 After spatial fluke filtering:", filtered.length);
-      
-      filtered.forEach(([x, y]) => {
-        ctx.fillStyle = "#00ff00";
-        ctx.fillRect(x, y, 2, 2);
-      });
-      
-      return filtered;
-      
-
+      }
+      return hit / target.length;
+    };
+  
+    for (let i = 0; i < allStrokes.length; i++) {
+      if (colored.has(i)) continue;
+      const group = [i];
+      colored.add(i);
+      const color = `hsl(${Math.floor(Math.random() * 360)},100%,60%)`;
+  
+      for (let j = 0; j < allStrokes.length; j++) {
+        if (i === j || colored.has(j)) continue;
+        const overlap = strokeCovered(allStrokes[i], allStrokes[j]);
+        if (overlap > 0.8) {
+          group.push(j);
+          colored.add(j);
+          console.log(`🔗 Merging stroke ${i} & ${j} — confidence: ${overlap.toFixed(2)}`);
+        }
+      }
+  
+      strokeGroups.push(group);
+  
+      for (const idx of group) {
+        const stroke = allStrokes[idx];
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(stroke[0][0], stroke[0][1]);
+        for (const [x, y] of stroke) {
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+    }
+  
+    console.log("🎨 Final stroke groups:", strokeGroups.length);
+    return strokeGroups.map(g => g.map(i => allStrokes[i]));
   }
   
