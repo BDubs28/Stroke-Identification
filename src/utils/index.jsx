@@ -8,60 +8,31 @@ export async function extractStrokeSegments(canvas) {
   
     const getPixelIndex = (x, y) => y * width + x;
   
-    const isBlack = (x, y) => {
+    const isWhite = (x, y) => {
       const i = (y * width + x) * 4;
-      return (
-        data[i] < 20 &&
-        data[i + 1] < 20 &&
-        data[i + 2] < 20 &&
-        data[i + 3] > 0
-      );
+      return data[i] > 230 && data[i + 1] > 230 && data[i + 2] > 230;
     };
   
-    // Precompute edge pixels
-    const edgeMap = new Uint8Array(width * height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (!isBlack(x, y)) continue;
+    const sleep = (ms) =>
+        ms <= 0 ? new Promise(requestAnimationFrame) : new Promise((res) => setTimeout(res, ms));
+      
   
-        let isEdge = false;
-        for (let dx = -1; dx <= 1 && !isEdge; dx++) {
-          for (let dy = -1; dy <= 1 && !isEdge; dy++) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (
-              nx < 0 || ny < 0 || nx >= width || ny >= height || !isBlack(nx, ny)
-            ) {
-              isEdge = true;
-            }
-          }
-        }
-  
-        if (isEdge) {
-          edgeMap[getPixelIndex(x, y)] = 1;
-        }
-      }
-    }
-  
-    const isEdgePixel = (x, y) => edgeMap[getPixelIndex(x, y)] === 1;
-  
-    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  
-    const drawDebugPoint = (x, y, color, size = 1) => {
+    const drawDebugPoint = (x, y, color) => {
       ctx.fillStyle = color;
-      ctx.fillRect(x, y, size, size);
+      ctx.fillRect(x, y, 1, 1);
     };
   
     const animateDebugAngle = async (p1, p2, p3, angle, isSharp) => {
       drawDebugPoint(p1[0], p1[1], "#ff0000");
       drawDebugPoint(p2[0], p2[1], "#ffff00");
       drawDebugPoint(p3[0], p3[1], "#00aaff");
+  
       if (isSharp) {
-        drawDebugPoint(p2[0], p2[1], "#ff00ff", 2);
+        drawDebugPoint(p2[0], p2[1], "#ff00ff");
         console.log(`🟪 Sharp angle at (${p2[0]}, ${p2[1]}): ${angle.toFixed(1)}°`);
-        // await sleep(300);
+        await sleep(0);
       } else {
-        // await sleep(10);
+        await sleep(0);
       }
     };
   
@@ -69,12 +40,62 @@ export async function extractStrokeSegments(canvas) {
       const a = [p2[0] - p1[0], p2[1] - p1[1]];
       const b = [p3[0] - p2[0], p3[1] - p2[1]];
       const dot = a[0] * b[0] + a[1] * b[1];
-      const magA = Math.hypot(...a);
-      const magB = Math.hypot(...b);
+      const magA = Math.hypot(a[0], a[1]);
+      const magB = Math.hypot(b[0], b[1]);
       const cosTheta = dot / (magA * magB);
       return Math.acos(Math.min(Math.max(cosTheta, -1), 1)) * (180 / Math.PI);
     };
   
+    // Step 1: Build stroke map (non-white pixels)
+    const strokeMap = new Uint8Array(width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (!isWhite(x, y)) {
+          strokeMap[getPixelIndex(x, y)] = 1;
+        }
+      }
+    }
+  
+    // Step 2: Build refined edge map
+    const edgeMap = new Uint8Array(width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = getPixelIndex(x, y);
+        if (strokeMap[idx] !== 1) continue;
+  
+        let isEdge = false;
+        for (let dx = -1; dx <= 1 && !isEdge; dx++) {
+          for (let dy = -1; dy <= 1 && !isEdge; dy++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (
+              nx < 0 || ny < 0 ||
+              nx >= width || ny >= height ||
+              strokeMap[getPixelIndex(nx, ny)] !== 1
+            ) {
+              isEdge = true;
+            }
+          }
+        }
+  
+        if (isEdge) edgeMap[idx] = 1;
+      }
+    }
+  
+    // Step 3: Visualize edge/filler pixels
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = getPixelIndex(x, y);
+        if (strokeMap[idx] === 1) {
+          ctx.fillStyle = edgeMap[idx] ? "#ff0000" : "#0000ff"; // red edge, blue filler
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+  
+    const isEdgePixel = (x, y) => edgeMap[getPixelIndex(x, y)] === 1;
+  
+    // Step 4: Flood fill edge paths & detect angles
     const floodFill = async (x, y) => {
       const stack = [[x, y]];
       const path = [];
@@ -90,10 +111,11 @@ export async function extractStrokeSegments(canvas) {
   
         for (let dx = -1; dx <= 1; dx++) {
           for (let dy = -1; dy <= 1; dy++) {
-            const nx = cx + dx, ny = cy + dy;
+            const nx = cx + dx;
+            const ny = cy + dy;
             if (
-              nx >= 0 && ny >= 0 &&
-              nx < width && ny < height &&
+              nx >= 0 && nx < width &&
+              ny >= 0 && ny < height &&
               !visited[getPixelIndex(nx, ny)] &&
               isEdgePixel(nx, ny)
             ) {
@@ -103,105 +125,92 @@ export async function extractStrokeSegments(canvas) {
         }
       }
   
-      const strokeSegments = [];
-      const sharpPoints = [];
-  
+      // Check angles on this path
       for (let i = 0; i < path.length - 14; i++) {
         const p1 = path[i];
         const p2 = path[i + 7];
         const p3 = path[i + 14];
         const angle = getAngle(p1, p2, p3);
+  
         const isSharp = !isNaN(angle) && angle > 40;
+        if (isSharp) debugPoints.push({ point: p2, index: i });
+  
         await animateDebugAngle(p1, p2, p3, angle, isSharp);
-        if (isSharp) {
-          sharpPoints.push({ point: p2, index: i + 7 });
-        }
       }
-  
-      if (sharpPoints.length === 0) return [];
-  
-      const strokes = [];
-      let lastIndex = 0;
-  
-      for (const sharp of sharpPoints) {
-        const segment = path.slice(lastIndex, sharp.index + 1);
-        if (segment.length >= 2) {
-          strokes.push(segment);
-        }
-        lastIndex = sharp.index + 1;
-      }
-  
-      if (lastIndex < path.length - 1) {
-        strokes.push(path.slice(lastIndex));
-      }
-  
-      return strokes;
     };
   
-    const allStrokes = [];
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         if (!visited[getPixelIndex(x, y)] && isEdgePixel(x, y)) {
-          const segments = await floodFill(x, y);
-          if (segments) allStrokes.push(...segments);
+          await floodFill(x, y);
         }
       }
     }
   
-    console.log("🧠 Segmented strokes:", allStrokes.length);
+    console.log("🟣 Found", debugPoints.length, "sharp angle debug points.");
   
-    const brushRadius = 5;
-    const colored = new Set();
-    const strokeGroups = [];
+    // Deduplicate angles based on index order
+    const deduplicateByProximity = (points, window = 10) => {
+      const clusters = [];
+      let currentCluster = [];
   
-    const strokeCovered = (brushPath, target) => {
-      let hit = 0;
-      const hitSet = new Set(target.map(([x, y]) => `${x},${y}`));
-      for (const [bx, by] of brushPath) {
-        for (let dx = -brushRadius; dx <= brushRadius; dx++) {
-          for (let dy = -brushRadius; dy <= brushRadius; dy++) {
-            const k = `${bx + dx},${by + dy}`;
-            if (hitSet.has(k)) {
-              hit++;
-              break;
-            }
-          }
+      for (let i = 0; i < points.length; i++) {
+        const cur = points[i];
+        if (
+          currentCluster.length === 0 ||
+          cur.index - currentCluster[currentCluster.length - 1].index <= window
+        ) {
+          currentCluster.push(cur);
+        } else {
+          clusters.push(currentCluster);
+          currentCluster = [cur];
         }
       }
-      return hit / target.length;
+  
+      if (currentCluster.length > 0) clusters.push(currentCluster);
+  
+      return clusters.map((cluster) => {
+        const avgX = Math.round(
+          cluster.reduce((sum, p) => sum + p.point[0], 0) / cluster.length
+        );
+        const avgY = Math.round(
+          cluster.reduce((sum, p) => sum + p.point[1], 0) / cluster.length
+        );
+        return [avgX, avgY];
+      });
     };
   
-    for (let i = 0; i < allStrokes.length; i++) {
-      if (colored.has(i)) continue;
-      const group = [i];
-      colored.add(i);
-      const color = `hsl(${Math.floor(Math.random() * 360)},100%,60%)`;
+    const deduped = deduplicateByProximity(debugPoints);
+    console.log("🟢 Deduplicated sharp angles:", deduped.length);
   
-      for (let j = 0; j < allStrokes.length; j++) {
-        if (i === j || colored.has(j)) continue;
-        const overlap = strokeCovered(allStrokes[i], allStrokes[j]);
-        if (overlap > 0.8) {
-          group.push(j);
-          colored.add(j);
-          console.log(`🔗 Merging stroke ${i} & ${j} — confidence: ${overlap.toFixed(2)}`);
+    // Fluke filtering (surrounded by white)
+    const isSurroundedByWhite = (x, y, radius = 3, threshold = 0.6) => {
+      let whiteCount = 0;
+      let total = 0;
+  
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          total++;
+          const i = (ny * width + nx) * 4;
+          const isWhite = data[i] > 200 && data[i + 1] > 200 && data[i + 2] > 200;
+          if (isWhite) whiteCount++;
         }
       }
   
-      strokeGroups.push(group);
+      return whiteCount / total > threshold;
+    };
   
-      for (const idx of group) {
-        const stroke = allStrokes[idx];
-        ctx.strokeStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(stroke[0][0], stroke[0][1]);
-        for (const [x, y] of stroke) {
-          ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-      }
-    }
+    const filtered = deduped.filter(([x, y]) => !isSurroundedByWhite(x, y));
+    console.log("🧠 After fluke filtering:", filtered.length);
   
-    console.log("🎨 Final stroke groups:", strokeGroups.length);
-    return strokeGroups.map(g => g.map(i => allStrokes[i]));
+    filtered.forEach(([x, y]) => {
+      ctx.fillStyle = "#00ff00"; // green
+      ctx.fillRect(x, y, 2, 2);
+    });
+  
+    return filtered;
   }
   
